@@ -74,6 +74,37 @@ raw=False
   Returns all data values as byte strings. This can be used for
   debugging or for doing your own decoding.
 
+predicate_fields=None
+  A list of field names to parse up front and pass to ``predicate``
+  for each candidate record. Field names are matched against the
+  table's field names as they appear after the current case handling
+  (see ``lowernames``). Unknown or duplicate names raise
+  ``ValueError`` before any record is read. Memo fields (``M``,
+  ``G``, ``P`` and ``B``) are not allowed here, since the predicate
+  must be able to run without reading the memo file.
+
+predicate=None
+  A function called once for every candidate record (both normal and
+  deleted records are filtered). It receives a dictionary of the
+  parsed ``predicate_fields`` values (raw field bytes when
+  ``raw=True``) and should return a true value to keep the record.
+  Records that are filtered out are skipped without parsing the
+  remaining fields and without reading any memo content. Requires
+  ``predicate_fields``.
+
+  Note that ``len()`` of a table that is not loaded still counts
+  physical records in the file, since counting the filtered records
+  would require a full scan.
+
+fields=None
+  A list of field names to include in the produced records, in the
+  given order. Fields already parsed for the predicate are reused
+  instead of being parsed again; all other output fields are parsed
+  only for records that pass the predicate. Fields that are not
+  needed at all are skipped without being read. If the projection
+  contains no memo fields the memo file is never opened, and the
+  table can be read even if the memo file is missing.
+
 
 Methods
 -------

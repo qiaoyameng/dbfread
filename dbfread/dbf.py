@@ -23,6 +23,10 @@ else:
     ORDERED_DICT = collections.OrderedDict
 
 
+# Field types whose content is stored in the memo (FPT/DBT) file.
+MEMO_FIELD_TYPES = frozenset('MGPB')
+
+
 DBFHeader = StructParser(
     'DBFHeader',
     '<BBBBLHHHBBLLLBBH',
@@ -92,7 +96,10 @@ class DBF(object):
                  load=False,
                  raw=False,
                  ignore_missing_memofile=False,
-                 char_decode_errors='strict'):
+                 char_decode_errors='strict',
+                 predicate_fields=None,
+                 predicate=None,
+                 fields=None):
 
         self.encoding = encoding
         self.ignorecase = ignorecase
@@ -139,10 +146,67 @@ class DBF(object):
                 # Invalid date or '\x00\x00\x00'.
                 self.date = None
 
+        self.predicate = predicate
+        self._predicate_fields = self._resolve_predicate_fields(
+            predicate_fields, predicate)
+        self._output_fields = self._resolve_output_fields(fields)
+
         self.memofilename = self._get_memofilename()
 
         if load:
             self.load()
+
+    def _resolve_field_names(self, names, option):
+        """Resolve caller supplied field names to field objects.
+
+        Names are matched against the table's field names as they
+        appear after the current case handling (``lowernames``).
+        Unknown and duplicate names are rejected with ``ValueError``.
+        """
+        by_name = dict((field.name, field) for field in self.fields)
+        resolved = []
+        seen = set()
+        for name in names:
+            if name in seen:
+                raise ValueError(
+                    'duplicate field in {}: {!r}'.format(option, name))
+            seen.add(name)
+            try:
+                resolved.append(by_name[name])
+            except KeyError:
+                raise ValueError(
+                    'unknown field in {}: {!r}'.format(option, name))
+        return resolved
+
+    def _resolve_predicate_fields(self, predicate_fields, predicate):
+        if predicate is None:
+            if predicate_fields is not None:
+                raise ValueError(
+                    'predicate_fields requires a predicate')
+            return []
+        if predicate_fields is None:
+            raise ValueError(
+                'predicate requires predicate_fields')
+
+        resolved = self._resolve_field_names(predicate_fields,
+                                             'predicate_fields')
+        for field in resolved:
+            if field.type in MEMO_FIELD_TYPES:
+                message = 'predicate field must not be a memo field: {!r}'
+                raise ValueError(message.format(field.name))
+        return resolved
+
+    def _resolve_output_fields(self, fields):
+        if fields is None:
+            return None
+        return self._resolve_field_names(fields, 'fields')
+
+    def _memo_fields_needed(self):
+        """``True`` if produced records may include memo field values."""
+        if self._output_fields is None:
+            return True
+        return any(field.type in MEMO_FIELD_TYPES
+                   for field in self._output_fields)
 
     @property
     def dbversion(self):
@@ -151,13 +215,16 @@ class DBF(object):
     def _get_memofilename(self):
         # Does the table have a memo field?
         field_types = [field.type for field in self.fields]
-        if not set(field_types) & set('MGPB'):
+        if not set(field_types) & MEMO_FIELD_TYPES:
             # No memo fields.
             return None
 
         path = find_memofile(self.filename)
         if path is None:
-            if self.ignore_missing_memofile:
+            if self.ignore_missing_memofile or \
+                    not self._memo_fields_needed():
+                # The memo file is not needed to produce the
+                # requested fields.
                 return None
             else:
                 raise MissingMemoFile('missing memo file for {}'.format(
@@ -250,7 +317,8 @@ class DBF(object):
             self.fields.append(field)
 
     def _open_memofile(self):
-        if self.memofilename and not self.raw:
+        if self.memofilename and not self.raw \
+                and self._memo_fields_needed():
             return open_memofile(self.memofilename, self.header.dbversion)
         else:
             return FakeMemoFile(self.memofilename)
@@ -315,21 +383,104 @@ class DBF(object):
             skip_record = self._skip_record
             read = infile.read
 
-            while True:
-                sep = read(1)
+            predicate = self.predicate
+            output_fields = self._output_fields
 
-                if sep == record_type:
-                    items = [
-                        (field.name, parse(field, read(field.length)))
-                        for field in self.fields
-                    ]
-                    yield self.recfactory(items)
+            if predicate is None and output_fields is None:
+                for record in self._iter_all_records(
+                        record_type, read, parse, skip_record, infile):
+                    yield record
+            else:
+                for record in self._iter_selected_records(
+                        record_type, read, parse, skip_record, infile):
+                    yield record
 
-                elif sep in (b'\x1a', b''):
-                    # End of records.
-                    break
-                else:
-                    skip_record(infile)
+    def _iter_all_records(self, record_type, read, parse, skip_record,
+                          infile):
+        # No filtering or projection: parse every field of every
+        # record, like dbfread always has.
+        while True:
+            sep = read(1)
+
+            if sep == record_type:
+                items = [
+                    (field.name, parse(field, read(field.length)))
+                    for field in self.fields
+                ]
+                yield self.recfactory(items)
+
+            elif sep in (b'\x1a', b''):
+                # End of records.
+                break
+            else:
+                skip_record(infile)
+
+    def _iter_selected_records(self, record_type, read, parse, skip_record,
+                               infile):
+        # Filtering and/or projection was requested. Only parse
+        # predicate fields up front, run the predicate once per
+        # candidate record, and parse the remaining output fields
+        # only for records that pass. Fields that are not needed at
+        # all are seeked past without being read, and memo content is
+        # never touched for filtered out records.
+        predicate = self.predicate
+        predicate_fields = self._predicate_fields
+        predicate_names = set(field.name for field in predicate_fields)
+
+        output_fields = self._output_fields
+        if output_fields is None:
+            output_fields = self.fields
+        output_names = set(field.name for field in output_fields)
+
+        seek = infile.seek
+        recfactory = self.recfactory
+
+        while True:
+            sep = read(1)
+
+            if sep == record_type:
+                parsed = {}
+                deferred = {}
+
+                for field in self.fields:
+                    if field.name in predicate_names:
+                        parsed[field.name] = parse(field,
+                                                   read(field.length))
+                    elif field.name in output_names:
+                        # Read the raw bytes now (the file is read
+                        # sequentially) but defer parsing until the
+                        # record has passed the predicate.
+                        deferred[field.name] = (field, read(field.length))
+                    else:
+                        # Field not needed: skip its bytes entirely.
+                        seek(field.length, 1)
+
+                if predicate is not None:
+                    predicate_record = ORDERED_DICT(
+                        (field.name, parsed[field.name])
+                        for field in predicate_fields)
+                    if not predicate(predicate_record):
+                        # Record filtered out. Output fields are not
+                        # parsed and memo content is never read.
+                        continue
+
+                items = []
+                for field in output_fields:
+                    if field.name in parsed:
+                        # Already parsed for the predicate: reuse the
+                        # value instead of parsing again.
+                        value = parsed[field.name]
+                    else:
+                        deferred_field, data = deferred[field.name]
+                        value = parse(deferred_field, data)
+                    items.append((field.name, value))
+                yield recfactory(items)
+
+            elif sep in (b'\x1a', b''):
+                # End of records.
+                break
+            else:
+                skip_record(infile)
 
     def __iter__(self):
         if self.loaded:
