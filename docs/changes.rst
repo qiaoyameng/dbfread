@@ -7,6 +7,12 @@ Release History
 (Next Version)
 ^^^^^^^^^^^^^^^^^^
 
+* added ``compact_copy()``, which writes a compacted copy of a DBF
+  table and its memo file (Visual FoxPro FPT or dBase III DBT) to a
+  new directory, keeping only memo blocks that are referenced by
+  records. Memo pointers are rewritten, sharing of blocks is
+  preserved, and deleted records can optionally be dropped.
+
 * records are now returned ``dict`` instead of ``collections.OrderedDict``
   in Python 3.7 and up (as well as CPython 3.6) since normal Python
   dictionaries are now ordered.

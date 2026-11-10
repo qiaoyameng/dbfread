@@ -7,4 +7,8 @@ class MissingMemoFile(IOError):
     """Raised if the corresponding memo file was not found."""
 
 
-__all__ = ['DBFNotFound', 'MissingMemoFile']
+class InvalidMemoError(ValueError):
+    """Raised if a memo pointer or memo file layout is invalid."""
+
+
+__all__ = ['DBFNotFound', 'MissingMemoFile', 'InvalidMemoError']
