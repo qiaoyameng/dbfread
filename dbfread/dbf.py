@@ -4,6 +4,7 @@ Class to read DBF files.
 import os
 import sys
 import datetime
+import hashlib
 import platform
 import collections
 
@@ -14,6 +15,7 @@ from .memo import find_memofile, open_memofile, FakeMemoFile
 from .codepages import guess_encoding
 from .dbversions import get_dbversion_string
 from .exceptions import DBFNotFound, MissingMemoFile
+from .scan import Scan, ScanCursor, validate_cursor
 
 _py_version = (sys.version_info.major, sys.version_info.minor)
 _py_impl = platform.python_implementation()
@@ -296,6 +298,56 @@ class DBF(object):
                     self._skip_record(infile)
 
         return count
+
+    def _read_scan_state(self):
+        """Read the current scan state from the file header.
+
+        Returns (numrecords, field_digest) where field_digest is a
+        digest of the raw field descriptor bytes. This is read fresh
+        from disk every time so a long-lived table object sees records
+        appended since it was opened.
+        """
+        with open(self.filename, 'rb') as infile:
+            header = DBFHeader.read(infile)
+            descriptors = infile.read(max(header.headerlen - DBFHeader.size,
+                                          0))
+        field_digest = hashlib.sha1(descriptors).hexdigest()
+        return header.numrecords, field_digest
+
+    def scan(self, generation, cursor=None):
+        """Open an incremental scan of an append-only table.
+
+        ``generation`` is a caller-provided id for this incarnation of
+        the file; it must be changed when the file is replaced by a new
+        table. ``cursor`` is a ``ScanCursor`` from a previous scan, or
+        None to start from the first physical record.
+
+        The record count declared in the header is frozen when the scan
+        is opened; records appended while the scan runs are picked up
+        by the next scan. Returns a ``Scan`` object. Iterating it
+        yields ``ScannedRecord`` objects (physical position, deleted
+        flag, record) and advances ``scan.cursor``, which can be
+        serialized with ``cursor.dumps()`` and passed back in later.
+
+        Raises CursorMismatch if the cursor's generation differs, the
+        field layout has changed, or the record count has moved
+        backwards.
+
+        Only append-only producers are supported. In-place modification
+        of old records is not detected. Memo files may grow by
+        appending, but blocks referenced during a scan must be left
+        unmodified by the producer.
+        """
+        numrecords, field_digest = self._read_scan_state()
+
+        if cursor is None:
+            cursor = ScanCursor(generation=generation,
+                                field_digest=field_digest,
+                                position=0)
+        else:
+            validate_cursor(generation, cursor, numrecords, field_digest)
+
+        return Scan(self, cursor, ceiling=numrecords)
 
     def _iter_records(self, record_type=b' '):
         with open(self.filename, 'rb') as infile, \

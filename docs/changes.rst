@@ -7,6 +7,12 @@ Release History
 (Next Version)
 ^^^^^^^^^^^^^^^^^^
 
+* added ``DBF.scan()`` for incremental scanning of append-only tables.
+  It yields records with physical record numbers and deleted flags, and
+  produces a serializable ``ScanCursor`` for resuming. Resuming is
+  refused (``CursorMismatch``) if the file generation id, field layout
+  or record count no longer match the cursor.
+
 * records are now returned ``dict`` instead of ``collections.OrderedDict``
   in Python 3.7 and up (as well as CPython 3.6) since normal Python
   dictionaries are now ordered.

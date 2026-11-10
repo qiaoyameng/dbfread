@@ -51,6 +51,7 @@ Contents
    changes
    installing
    introduction
+   scanning
    exporting_data
    dbf_objects
    field_types
@@ -58,4 +59,3 @@ Contents
    resources
    license
    acknowledgements
-
