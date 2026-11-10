@@ -26,6 +26,7 @@ P   picture        byte string
 T   time           datetime.datetime
 V   varchar        unicode string
 Y   currency       decimal.Decimal
+Q   varbinary      byte string
 ==  =============  ========================================================
 
 Text values ('C') can be up to 65535 bytes long. DBF was originally
@@ -37,14 +38,32 @@ in Visual FoxPro databases and binary memos in other
 versions. ``dbfread`` will look at the database version to parse and
 return the correct data type.
 
-The '0' field type is used for '_NullFlags' in Visual FoxPro.  It was
-mistakenly though to always be one byte long and was interpreted as an
-integer. From 2.0.1 on it is returned as a byte string.
+Visual FoxPro nullable fields
+-----------------------------
 
-The 'V' field is an alternative character field used by Visual
-FoxPro. The binary version of this field is not yet supported. (See
-https://msdn.microsoft.com/en-us/library/st4a0s68%28VS.80%29.aspx for
-more.)
+When a table contains nullable fields Visual FoxPro appends a hidden
+system field named ``_NullFlags`` (type ``'0'``). It holds a bitmap with
+one bit per visible field, in field-descriptor order; a set bit means
+the value of that field is ``NULL``. dbfread reads this bitmap
+automatically, returns ``None`` for nullable fields whose bit is set,
+and never exposes ``_NullFlags`` itself as a record field.
+
+A ``NULL`` value is distinct from an empty value. For a Varchar field
+an empty string (``''``) and for a Varbinary field a zero-length byte
+string (``b''``) are returned as such when the NULL bit is clear, and
+as ``None`` only when the bit is set.
+
+Varchar (``'V'``) and Varbinary (``'Q'``) fields are variable length.
+Each value occupies the declared width plus one extra byte: the data,
+left-justified and padded with ``0x00``, followed by a one-byte length
+of the actual data. A length of zero is the empty value, while a length
+equal to the width means the value fills the whole field. Varchar is
+decoded using the table encoding while Varbinary is returned as
+``bytes``.
+
+In ``raw`` mode the original field bytes are returned unchanged: the
+NULL bitmap is not applied and Varchar/Varbinary values keep their
+padding and trailing length byte.
 
 
 Adding Custom Field Types

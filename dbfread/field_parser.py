@@ -5,6 +5,7 @@ import sys
 import datetime
 import struct
 from decimal import Decimal
+from .exceptions import InvalidRecord
 from .memo import BinaryMemo
 
 PY2 = sys.version_info[0] == 2
@@ -253,5 +254,39 @@ class FieldParser:
     # Timestamp field ('@')
     parse40 = parseT
 
-    # Varchar field ('V') (Visual FoxPro)
-    parseV = parseC
+    def _parse_varying(self, field, data):
+        """Parse a Visual FoxPro Varchar/Varbinary field.
+
+        The field occupies ``field.length + 1`` bytes in the record:
+        ``field.length`` bytes of left-justified data followed by a
+        one-byte length that says how many of the leading bytes hold the
+        actual value. A length of 0 is an empty value (an empty string
+        for Varchar, a zero-length byte string for Varbinary), while a
+        length equal to the field width means the value fills the whole
+        field and there is no padding. NULL values never reach here: they
+        are detected from the ``_NullFlags`` bitmap before parsing.
+        """
+        if len(data) != field.length + 1:
+            # Should be caught by the record reader, but guard against
+            # direct use of the field parser.
+            raise InvalidRecord(
+                'expected {} bytes for Varchar/Varbinary field '
+                '(got {})'.format(field.length + 1, len(data)),
+                field_name=field.name)
+
+        length = data[-1]
+        if length > field.length:
+            raise InvalidRecord(
+                'length byte {} exceeds field width {}'.format(
+                    length, field.length),
+                field_name=field.name)
+
+        return data[:length]
+
+    def parseV(self, field, data):
+        """Parse Varchar field ('V') and return unicode string."""
+        return self.decode_text(self._parse_varying(field, data))
+
+    def parseQ(self, field, data):
+        """Parse Varbinary field ('Q') and return bytes."""
+        return self._parse_varying(field, data)

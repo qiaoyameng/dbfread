@@ -7,6 +7,22 @@ Release History
 (Next Version)
 ^^^^^^^^^^^^^^^^^^
 
+* Visual FoxPro nullable fields are now read through the hidden
+  ``_NullFlags`` bitmap: nullable fields return ``None`` when their
+  bit is set, and the system bitmap field is no longer exposed as a
+  record field. NULL stays distinguishable from an empty Varchar and
+  from a zero-length Varbinary.
+
+* Visual FoxPro Varchar (``V``) and Varbinary (``Q``) fields now use
+  the trailing length byte to interpret variable-length values.
+  Varchar is decoded with the table encoding and Varbinary is returned
+  as ``bytes``. In ``raw`` mode the original field bytes (including the
+  length byte and padding) are returned unchanged.
+
+* corrupt Visual FoxPro records raise ``dbfread.InvalidRecord`` with
+  the physical record number and the field name for a truncated
+  nullable bitmap or an out-of-range Varchar/Varbinary length byte.
+
 * records are now returned ``dict`` instead of ``collections.OrderedDict``
   in Python 3.7 and up (as well as CPython 3.6) since normal Python
   dictionaries are now ordered.
