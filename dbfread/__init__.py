@@ -19,7 +19,14 @@ __license__ = 'MIT'
 
 from .dbf import DBF
 from .deprecated_dbf import open, read
-from .exceptions import DBFNotFound, MissingMemoFile
+from .dbf import MemoErrorContext
+from .exceptions import (DBFNotFound,
+                         MissingMemoFile,
+                         MemoError,
+                         InvalidMemoPointer,
+                         TruncatedMemo,
+                         UnsupportedMemoType,
+                         DBFRecordTruncated)
 from .field_parser import FieldParser, InvalidValue
 from .version import version_info, version as __version__
 

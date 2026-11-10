@@ -10,6 +10,9 @@ DB4 == dBase IV
 """
 from .ifiles import ifind
 from .struct_parser import StructParser
+from .exceptions import (InvalidMemoPointer,
+                         TruncatedMemo,
+                         UnsupportedMemoType)
 
 
 VFPFileHeader = StructParser(
@@ -79,6 +82,13 @@ class MemoFile(object):
     def _close(self):
         self.file.close()
 
+    def _file_size(self):
+        current = self.file.tell()
+        self.file.seek(0, 2)
+        size = self.file.tell()
+        self.file.seek(current)
+        return size
+
     def __getitem__(self, index):
         raise NotImplementedError
 
@@ -103,31 +113,62 @@ class FakeMemoFile(MemoFile):
 class VFPMemoFile(MemoFile):
     def _init(self):
         self.header = VFPFileHeader.read(self.file)
+        self._size = self._file_size()
 
     def __getitem__(self, index):
         """Get a memo from the file."""
         if index <= 0:
             return None
 
-        self._seek(index * self.header.blocksize)
-        memo_header = VFPMemoHeader.read(self.file)
+        offset = index * self.header.blocksize
+        if offset >= self._size:
+            raise InvalidMemoPointer(
+                'memo pointer {} is outside the memo file'.format(index),
+                pointer=index, offset=offset)
+
+        self._seek(offset)
+        header_bytes = self.file.read(VFPMemoHeader.size)
+        if len(header_bytes) != VFPMemoHeader.size:
+            raise TruncatedMemo(
+                'EOF reached while reading memo header at block '
+                '{}'.format(index),
+                pointer=index, offset=offset)
+        memo_header = VFPMemoHeader.unpack(header_bytes)
 
         data = self._read(memo_header.length)
         if len(data) != memo_header.length:
-            raise IOError('EOF reached while reading memo')
+            raise TruncatedMemo(
+                'EOF reached while reading memo at block {}'.format(index),
+                pointer=index, offset=offset)
 
-        return VFP_TYPE_MAP.get(memo_header.type, BinaryMemo)(data)
+        try:
+            memo_type = VFP_TYPE_MAP[memo_header.type]
+        except KeyError:
+            raise UnsupportedMemoType(
+                'unsupported memo block type 0x{:x} at block {}'.format(
+                    memo_header.type, index),
+                pointer=index, offset=offset)
+        return memo_type(data)
 
 
 class DB3MemoFile(MemoFile):
     """dBase III memo file."""
     # Code from dbf.py
+    def _init(self):
+        self._size = self._file_size()
+
     def __getitem__(self, index):
         if index <= 0:
             return None
 
         block_size = 512
-        self._seek(index * block_size)
+        offset = index * block_size
+        if offset >= self._size:
+            raise InvalidMemoPointer(
+                'memo pointer {} is outside the memo file'.format(index),
+                pointer=index, offset=offset)
+
+        self._seek(offset)
         data = b''
         while True:
             newdata = self._read(block_size)
@@ -151,6 +192,9 @@ class DB3MemoFile(MemoFile):
 
 class DB4MemoFile(MemoFile):
     """dBase IV memo file"""
+    def _init(self):
+        self._size = self._file_size()
+
     def __getitem__(self, index):
         if index <= 0:
             return None
@@ -158,9 +202,25 @@ class DB4MemoFile(MemoFile):
         # Todo: read this from the file header.
         block_size = 512
 
-        self._seek(index * block_size)
-        memo_header = DB4MemoHeader.read(self.file)
+        offset = index * block_size
+        if offset >= self._size:
+            raise InvalidMemoPointer(
+                'memo pointer {} is outside the memo file'.format(index),
+                pointer=index, offset=offset)
+
+        self._seek(offset)
+        header_bytes = self.file.read(DB4MemoHeader.size)
+        if len(header_bytes) != DB4MemoHeader.size:
+            raise TruncatedMemo(
+                'EOF reached while reading memo header at block '
+                '{}'.format(index),
+                pointer=index, offset=offset)
+        memo_header = DB4MemoHeader.unpack(header_bytes)
         data = self._read(memo_header.length)
+        if len(data) != memo_header.length:
+            raise TruncatedMemo(
+                'EOF reached while reading memo at block {}'.format(index),
+                pointer=index, offset=offset)
         # Todo: fields are terminated in different ways.
         # \x1a is one of them
         # \x1f seems to be another (dbase_8b.dbt)

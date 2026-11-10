@@ -6,6 +6,7 @@ import sys
 import datetime
 import platform
 import collections
+from collections import namedtuple
 
 from .ifiles import ifind
 from .struct_parser import StructParser
@@ -13,7 +14,10 @@ from .field_parser import FieldParser
 from .memo import find_memofile, open_memofile, FakeMemoFile
 from .codepages import guess_encoding
 from .dbversions import get_dbversion_string
-from .exceptions import DBFNotFound, MissingMemoFile
+from .exceptions import (DBFNotFound,
+                         MissingMemoFile,
+                         MemoError,
+                         DBFRecordTruncated)
 
 _py_version = (sys.version_info.major, sys.version_info.minor)
 _py_impl = platform.python_implementation()
@@ -21,6 +25,19 @@ if _py_version >= (3, 7) or (_py_version == (3, 6) and _py_impl == 'CPython'):
     ORDERED_DICT = dict
 else:
     ORDERED_DICT = collections.OrderedDict
+
+
+# Structured diagnostic for one isolated memo failure.
+#
+# physical_record_number: 1-based position of the record on disk
+#     (deleted records are counted as well).
+# field: name of the memo field whose cell failed.
+# pointer: memo pointer stored in the DBF cell.
+# position: byte offset of the memo block in the memo file.
+# error: the original MemoError exception.
+MemoErrorContext = namedtuple(
+    'MemoErrorContext',
+    ['physical_record_number', 'field', 'pointer', 'position', 'error'])
 
 
 DBFHeader = StructParser(
@@ -92,7 +109,8 @@ class DBF(object):
                  load=False,
                  raw=False,
                  ignore_missing_memofile=False,
-                 char_decode_errors='strict'):
+                 char_decode_errors='strict',
+                 on_memo_error=None):
 
         self.encoding = encoding
         self.ignorecase = ignorecase
@@ -101,6 +119,10 @@ class DBF(object):
         self.raw = raw
         self.ignore_missing_memofile = ignore_missing_memofile
         self.char_decode_errors = char_decode_errors
+        self.on_memo_error = on_memo_error
+        # One MemoErrorContext per isolated cell. The list accumulates
+        # diagnostics across every iteration over this table.
+        self.memo_errors = []
 
         if recfactory is None:
             self.recfactory = lambda items: items
@@ -314,15 +336,43 @@ class DBF(object):
             # Shortcuts for speed.
             skip_record = self._skip_record
             read = infile.read
+            record_number = 0
+            recordlen = self.header.recordlen
 
             while True:
                 sep = read(1)
+                if sep == b'':
+                    # End of file without the 0x1a terminator.
+                    break
+
+                record_number += 1
 
                 if sep == record_type:
-                    items = [
-                        (field.name, parse(field, read(field.length)))
-                        for field in self.fields
-                    ]
+                    items = []
+                    for field in self.fields:
+                        data = read(field.length)
+                        if len(data) != field.length:
+                            # The main record is truncated. This is not
+                            # a memo failure and can never be skipped.
+                            raise DBFRecordTruncated(
+                                'physical record {} ended after {} of {} '
+                                'bytes'.format(record_number,
+                                               len(data) + 1,
+                                               recordlen))
+                        try:
+                            value = parse(field, data)
+                        except MemoError as error:
+                            if self.on_memo_error is None:
+                                raise
+                            context = MemoErrorContext(
+                                physical_record_number=record_number,
+                                field=field.name,
+                                pointer=error.pointer,
+                                position=error.offset,
+                                error=error)
+                            self.memo_errors.append(context)
+                            value = self.on_memo_error(context)
+                        items.append((field.name, value))
                     yield self.recfactory(items)
 
                 elif sep in (b'\x1a', b''):

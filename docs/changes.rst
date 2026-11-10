@@ -7,6 +7,17 @@ Release History
 (Next Version)
 ^^^^^^^^^^^^^^^^^^
 
+* added ``on_memo_error`` callback for explicit memo error isolation.
+  When set, out-of-range memo pointers, truncated memo blocks and
+  unsupported memo block types no longer stop iteration: the callback
+  receives a structured ``MemoErrorContext`` (physical record number,
+  field, pointer, byte position and the original exception) and provides
+  the replacement value. The default behaviour is unchanged -- memo
+  errors still raise ``InvalidMemoPointer``, ``TruncatedMemo`` or
+  ``UnsupportedMemoType``. Structural DBF errors (such as
+  ``DBFRecordTruncated``) and custom parser exceptions are never
+  isolated. Diagnostics are collected in the ``memo_errors`` attribute.
+
 * records are now returned ``dict`` instead of ``collections.OrderedDict``
   in Python 3.7 and up (as well as CPython 3.6) since normal Python
   dictionaries are now ordered.

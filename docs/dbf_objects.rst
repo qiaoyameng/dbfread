@@ -74,6 +74,50 @@ raw=False
   Returns all data values as byte strings. This can be used for
   debugging or for doing your own decoding.
 
+on_memo_error=None
+  Controls what happens when a memo (FPT/DBT) block can't be read.
+
+  By default (``None``) the original error is raised and iteration
+  stops, exactly as in earlier versions. Pass a callback to switch on
+  explicit memo error isolation. Only memo failures are isolated:
+
+  * ``InvalidMemoPointer`` -- the memo pointer points outside the memo
+    file,
+  * ``TruncatedMemo`` -- the memo block ends before its declared data,
+  * ``UnsupportedMemoType`` -- the memo block has an unknown block type.
+
+  The callback is called once per affected cell with a
+  ``MemoErrorContext`` namedtuple and its return value is used as the
+  field value::
+
+      def replace_bad_memo(context):
+          print(context)
+          return None
+
+      table = DBF('people.dbf', on_memo_error=replace_bad_memo)
+
+  ``MemoErrorContext`` contains:
+
+  * ``physical_record_number`` -- 1-based position of the record on
+    disk (deleted records are counted as well),
+  * ``field`` -- name of the affected memo field,
+  * ``pointer`` -- memo pointer stored in the cell,
+  * ``position`` -- byte offset of the block in the memo file,
+  * ``error`` -- the original ``MemoError`` exception.
+
+  A NULL or empty memo (pointer 0) is a normal value and never produces
+  a diagnostic. If the same bad block is referenced by several rows the
+  callback is called once per cell, so every affected cell can be
+  located. Diagnostics are also accumulated in the ``memo_errors``
+  attribute of the table.
+
+  Structural failures of the main DBF file (for example
+  ``DBFRecordTruncated``) and exceptions raised by a custom
+  ``parserclass`` are never isolated: they are raised immediately even
+  when ``on_memo_error`` is set. If the callback itself raises, that
+  exception is raised with the original ``MemoError`` attached as its
+  cause and both files are closed.
+
 
 Methods
 -------
@@ -104,6 +148,12 @@ deleted
 
 loaded
   ``True`` if records are loaded into memory.
+
+memo_errors
+  A list of ``MemoErrorContext`` objects, one for each memo failure that
+  was isolated via ``on_memo_error``. The list accumulates diagnostics
+  across every iteration over the table (including ``load=True``). It is
+  empty when ``on_memo_error`` is not set.
 
 dbversion
   The name of the program that created the database (based on the
